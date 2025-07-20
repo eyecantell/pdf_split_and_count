@@ -1,0 +1,49 @@
+[project]
+name = "pdf_split_and_count"
+version = "0.1.0"
+description = "Directory traversal utility to find PDFs, split out any two-page pages, and count the number of pages"
+readme = "README.md"
+authors = [
+    {name = "eyecantell", email = "paul@pneuma.solutions"},
+]
+license = {text = "MIT"}
+classifiers = [
+    "Programming Language :: Python :: 3.13",
+]
+keywords = [
+    "pdf"
+]
+requires-python = ">=3.11"
+dependencies = [
+    "numpy>=2.3.1",
+    "opencv-python>=4.11.0.86",
+    "pdf2image>=1.17.0",
+    "pypdf>=5.8.0",
+]
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.4.4",
+    "pytest-cov>=4.1.0",
+    "coverage>=7.2.7",
+]
+
+[project.scripts]
+pdf_split_and_count = "pdf_split_and_count.main:main"
+
+[tool.ruff]
+line-length = 120
+
+[build-system]
+requires = ["pdm-backend"]
+build-backend = "pdm.backend"
+
+[tool.pdm]
+distribution = true
+package-dir = "src"
+includes = ["src/pdf_split_and_count"]
+
+[project.urls]
+Repository = "https://github.com/eyecantell/pdf_split_and_count"
+Issues = "https://github.com/eyecantell/pdf_split_and_count/issues"
+Documentation = "https://github.com/eyecantell/pdf_split_and_count#readme"

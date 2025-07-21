@@ -31,23 +31,30 @@ def deskew_image(image):
         logger.warning(f"Tesseract OSD failed: {e}. Attempting fallback.")
         angle = 0
     
-    # Fallback: Estimate rotation using text block orientation
-    if abs(angle) < 0.1:  # If OSD failed or angle is negligible
+    # Fallback: Estimate rotation using text contours
+    if abs(angle) < 1.0:  # Trigger fallback for near-zero or failed OSD
         try:
-            data = pytesseract.image_to_data(gray, config='--psm 3', output_type=pytesseract.Output.DICT)
-            blocks = [(data['left'][i], data['top'][i], data['width'][i], data['height'][i])
-                      for i in range(len(data['text'])) if data['conf'][i] > 0]
-            if blocks:
-                # Simple heuristic: Average aspect ratio of blocks to infer rotation
-                aspects = [h / w if w > 0 else 0 for _, _, w, h in blocks]
-                avg_aspect = sum(aspects) / len(aspects) if aspects else 0
-                if avg_aspect > 1.5:  # Likely vertical text, suggest 90-degree rotation
-                    angle = 90.0
-                    logger.debug(f"Fallback detected vertical text, setting angle to {angle}")
-                elif avg_aspect < 0.5:  # Likely horizontal text rotated 90 degrees
-                    angle = -90.0
-                    logger.debug(f"Fallback detected horizontal text, setting angle to {angle}")
-        except pytesseract.pytesseract.TesseractError as e:
+            # Binarize for contour detection
+            _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            if contours:
+                # Find the largest contour (assuming it contains text)
+                largest_contour = max(contours, key=cv2.contourArea)
+                rect = cv2.minAreaRect(largest_contour)
+                box = cv2.boxPoints(rect)
+                box = box.astype(np.int32)  # Replace np.int0 with np.int32
+                angle_fallback = rect[-1]
+                # Convert angle to range [-90, 0] (OpenCV angle convention)
+                if angle_fallback < -45.0:
+                    angle_fallback = 90 + angle_fallback
+                elif angle_fallback > 45.0:
+                    angle_fallback = -(90 - angle_fallback)
+                logger.debug(f"Fallback detected angle: {angle_fallback} from contour")
+                angle = angle_fallback
+            else:
+                logger.warning("No contours detected for fallback")
+        except Exception as e:
             logger.warning(f"Fallback failed: {e}. Using default angle 0.")
             angle = 0
     

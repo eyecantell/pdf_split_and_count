@@ -1,2 +1,3 @@
 from .pdf_handling import count_pages_in_pdf, split_double_page_pdf
+from .image_processing import deskew_image
 from .reporting import generate_page_count_report

@@ -1,6 +1,11 @@
 from pathlib import Path
 from .pdf_handling import split_double_page_pdf, merge_pages_to_pdf
 from .reporting import generate_page_count_report
+from prepdir import configure_logging
+import logging
+
+logger = logging.getLogger(__name__)
+configure_logging(logger, level="INFO")
 
 def process_pdfs_in_folder(folder_path, output_dir="processed_pdfs"):
     """Process all PDFs in the folder: count pages, split, clean, and merge."""

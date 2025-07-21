@@ -15,22 +15,35 @@ def deskew_image(image):
     # Convert to grayscale
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     
-    # Enhance contrast and apply adaptive thresholding for better OSD
-    gray = cv2.equalizeHist(gray)
-    gray = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                cv2.THRESH_BINARY, 11, 2)
-    edges = cv2.Canny(gray, 30, 100, apertureSize=3)
-    gray = cv2.addWeighted(gray, 0.6, edges, 0.4, 0.0)  # Adjust weights for text visibility
+    # Preprocess for text detection (less aggressive)
+    gray_text = cv2.equalizeHist(gray)
+    _, gray_text = cv2.threshold(gray_text, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    
+    # Perform OCR to check text content
+    ocr_data = pytesseract.image_to_data(gray_text, config='--psm 3', output_type=pytesseract.Output.DICT)
+    total_text = ''.join([text for text, conf in zip(ocr_data['text'], ocr_data['conf']) if conf > 0]).strip()
+    logger.debug(f"Detected text length: {len(total_text)}")
+    
+    # Preprocess for OSD (existing pipeline)
+    gray_osd = cv2.equalizeHist(gray)
+    gray_osd = cv2.adaptiveThreshold(gray_osd, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                     cv2.THRESH_BINARY, 11, 2)
+    edges = cv2.Canny(gray_osd, 30, 100, apertureSize=3)
+    gray_osd = cv2.addWeighted(gray_osd, 0.6, edges, 0.4, 0.0)
     
     # Use Tesseract OSD to detect orientation
-    try:
-        osd = pytesseract.image_to_osd(gray, config='--psm 0')
-        angle = float(osd.split('Rotate: ')[1].split('\n')[0])
-        logger.debug(f"Tesseract OSD angle: {angle}")
-    except pytesseract.pytesseract.TesseractError as e:
-        logger.warning(f"Tesseract OSD failed: {e}. Attempting fallback.")
-        angle = 0
-    
+    angle = 0
+    if len(total_text) > 5:  # Trust OSD if sufficient text is detected
+        try:
+            osd = pytesseract.image_to_osd(gray_osd, config='--psm 0')
+            angle = float(osd.split('Rotate: ')[1].split('\n')[0])
+            logger.debug(f"Tesseract OSD angle: {angle}")
+        except pytesseract.pytesseract.TesseractError as e:
+            logger.warning(f"Tesseract OSD failed: {e}. Attempting fallback.")
+            angle = 0
+    else:
+        logger.warning(f"Insufficient text ({len(total_text)} characters), skipping OSD and using fallback.")
+
     # Fallback: Estimate rotation using text contours
     if abs(angle) < 1.0:  # Trigger fallback for near-zero or failed OSD
         try:
@@ -39,19 +52,22 @@ def deskew_image(image):
             contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             
             if contours:
-                # Find the largest contour (assuming it contains text)
-                largest_contour = max(contours, key=cv2.contourArea)
-                rect = cv2.minAreaRect(largest_contour)
-                box = cv2.boxPoints(rect)
-                box = box.astype(np.int32)  # Replace np.int0 with np.int32
-                angle_fallback = rect[-1]
-                # Convert angle to range [-90, 0] (OpenCV angle convention)
-                if angle_fallback < -45.0:
-                    angle_fallback = 90 + angle_fallback
-                elif angle_fallback > 45.0:
-                    angle_fallback = -(90 - angle_fallback)
-                logger.debug(f"Fallback detected angle: {angle_fallback} from contour")
-                angle = angle_fallback
+                # Combine multiple contours for better angle estimation
+                valid_contours = [c for c in contours if cv2.contourArea(c) > 100]  # Filter small contours
+                if valid_contours:
+                    # Concatenate contours to get a bounding rectangle
+                    all_points = np.concatenate(valid_contours)
+                    rect = cv2.minAreaRect(all_points)
+                    angle_fallback = rect[-1]
+                    # Convert angle to range [-90, 90]
+                    if angle_fallback < -45.0:
+                        angle_fallback = 90 + angle_fallback
+                    elif angle_fallback > 45.0:
+                        angle_fallback = -(90 - angle_fallback)
+                    logger.debug(f"Fallback detected angle: {angle_fallback} from contours")
+                    angle = angle_fallback
+                else:
+                    logger.warning("No significant contours detected for fallback")
             else:
                 logger.warning("No contours detected for fallback")
         except Exception as e:

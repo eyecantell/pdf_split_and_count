@@ -15,59 +15,62 @@ def deskew_image(image):
     # Convert to grayscale
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     
-    # Enhance contrast and apply preprocessing for better OSD
+    # Enhance contrast and apply adaptive thresholding for better OSD
     gray = cv2.equalizeHist(gray)
-    # Apply Gaussian blur to reduce noise
-    gray = cv2.GaussianBlur(gray, (3, 3), 0)
-    # Use adaptive thresholding for better text detection
     gray = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                cv2.THRESH_BINARY, 15, 5)
+                                cv2.THRESH_BINARY, 11, 2)
+    edges = cv2.Canny(gray, 30, 100, apertureSize=3)
+    gray = cv2.addWeighted(gray, 0.6, edges, 0.4, 0.0)  # Adjust weights for text visibility
     
     # Use Tesseract OSD to detect orientation
     try:
         osd = pytesseract.image_to_osd(gray, config='--psm 0')
         angle = float(osd.split('Rotate: ')[1].split('\n')[0])
-        confidence = float(osd.split('Confidence: ')[1].split('\n')[0])
-        logger.debug(f"Tesseract OSD angle: {angle}, confidence: {confidence}")
+        logger.debug(f"Tesseract OSD angle: {angle}")
     except pytesseract.pytesseract.TesseractError as e:
         logger.warning(f"Tesseract OSD failed: {e}. Attempting fallback.")
         angle = 0
-        confidence = 0
     
-    # If Tesseract confidence is low (< 50) or angle is suspicious, use fallback
-    if confidence < 50 or abs(angle) in [90, 180, 270]:
-        logger.warning(f"Low confidence ({confidence}) or suspicious angle ({angle}). Using fallback.")
+    # Fallback: Estimate rotation using text block orientation
+    if abs(angle) < 0.1:  # If OSD failed or angle is negligible
         try:
-            # Binarize for contour detection
-            _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            if contours:
-                # Find the largest contour (assuming it contains text)
-                largest_contour = max(contours, key=cv2.contourArea)
-                rect = cv2.minAreaRect(largest_contour)
-                angle_fallback = rect[-1]
-                # Convert angle to range [-90, 90]
-                if angle_fallback < -45.0:
-                    angle_fallback = 90 + angle_fallback
-                elif angle_fallback > 45.0:
-                    angle_fallback = -(90 - angle_fallback)
-                logger.debug(f"Fallback detected angle: {angle_fallback} from contour")
-                angle = angle_fallback
-            else:
-                logger.warning("No contours detected for fallback")
-                angle = 0
-        except Exception as e:
+            data = pytesseract.image_to_data(gray, config='--psm 3', output_type=pytesseract.Output.DICT)
+            blocks = [(data['left'][i], data['top'][i], data['width'][i], data['height'][i])
+                      for i in range(len(data['text'])) if data['conf'][i] > 0]
+            if blocks:
+                # Simple heuristic: Average aspect ratio of blocks to infer rotation
+                aspects = [h / w if w > 0 else 0 for _, _, w, h in blocks]
+                avg_aspect = sum(aspects) / len(aspects) if aspects else 0
+                if avg_aspect > 1.5:  # Likely vertical text, suggest 90-degree rotation
+                    angle = 90.0
+                    logger.debug(f"Fallback detected vertical text, setting angle to {angle}")
+                elif avg_aspect < 0.5:  # Likely horizontal text rotated 90 degrees
+                    angle = -90.0
+                    logger.debug(f"Fallback detected horizontal text, setting angle to {angle}")
+        except pytesseract.pytesseract.TesseractError as e:
             logger.warning(f"Fallback failed: {e}. Using default angle 0.")
             angle = 0
     
-    # Apply rotation only if angle is significant (avoid over-rotating small tilts)
-    if abs(angle) > 1.0:  # Increased threshold to avoid minor corrections
+    # Apply rotation if significant angle detected
+    if abs(angle) > 0.1:
         (h, w) = img.shape[:2]
         center = (w // 2, h // 2)
         M = cv2.getRotationMatrix2D(center, angle, 1.0)
         img = cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
-        logger.debug(f"Applied rotation: {angle} degrees")
+        # Recheck aspect ratio to confirm correction
+        new_height, new_width = img.shape[:2]
+        new_aspect = new_width / new_height
+        if abs(new_aspect - 1.0) > 0.5 and abs(angle) > 45:  # Likely 90-degree correction
+            logger.debug(f"Rechecking orientation after {angle}-degree rotation, new aspect: {new_aspect}")
+            try:
+                osd_recheck = pytesseract.image_to_osd(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), config='--psm 0')
+                recheck_angle = float(osd_recheck.split('Rotate: ')[1].split('\n')[0])
+                if abs(recheck_angle) > 0.1:
+                    logger.debug(f"Recheck angle: {recheck_angle}, re-rotating")
+                    M = cv2.getRotationMatrix2D(center, recheck_angle, 1.0)
+                    img = cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+            except pytesseract.pytesseract.TesseractError as e:
+                logger.warning(f"Recheck OSD failed: {e}")
     
     # Convert back to PIL image
     img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)

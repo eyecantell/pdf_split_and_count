@@ -1,7 +1,7 @@
 {
     "name": "pdf_split_and_count dev env",
     "postCreateCommand": "cd /mounted/dev/pdf_split_and_count && pdm install",
-
+    
     "build": {
       "dockerfile": "Dockerfile",
       "context": ".."
@@ -25,9 +25,9 @@
                 "be5invis.toml"
             ],
             "settings": {
-                "python.defaultInterpreterPath": "/usr/local/bin/python",
-                "python.pythonPath": "/usr/local/bin/python"
+                "python.defaultInterpreterPath": "/mounted/dev/pdf_split_and_count/.venv/bin/python",
+                "python.pythonPath": "/mounted/dev/pdf_split_and_count/.venv/bin/python"
             }
         }
     }
-  }
+}

@@ -1,4 +1,4 @@
-# Development Dockerfile for pdf_split_and_count with PostgreSQL
+# Development Dockerfile for pdf_split_and_count
 # For use with VS Code Remote Development
 
 FROM python:3.13-slim AS base
@@ -14,6 +14,7 @@ RUN apt-get update && apt-get install -y \
     tree \
     vim \
     poppler-utils \
+    tesseract-ocr \
     libgl1-mesa-glx \
     libglib2.0-0 \
     && rm -rf /var/lib/apt/lists/*
@@ -39,7 +40,6 @@ RUN pip install --no-cache-dir \
     build \
     GitPython \
     pdm \
-    poppler-utils \
     pydantic \
     pytest \
     ruff \

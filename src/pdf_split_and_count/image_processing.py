@@ -7,7 +7,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 def deskew_image(image):
-    """Deskew an image to correct rotation."""
+    """Deskew an image to correct rotation and orientation."""
     # Convert PIL image to OpenCV format
     img_array = np.array(image)
     img = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
@@ -15,25 +15,69 @@ def deskew_image(image):
     # Convert to grayscale
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     
-    # Edge detection to find text alignment
-    edges = cv2.Canny(gray, 50, 150, apertureSize=3)
+    # Enhance contrast and apply adaptive thresholding for better OSD
+    gray = cv2.equalizeHist(gray)
+    gray = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                cv2.THRESH_BINARY, 11, 2)
+    edges = cv2.Canny(gray, 30, 100, apertureSize=3)
+    gray = cv2.addWeighted(gray, 0.6, edges, 0.4, 0.0)  # Adjust weights for text visibility
     
-    # Detect lines using Hough Transform
-    lines = cv2.HoughLines(edges, 1, np.pi / 180, 200)
-    angle = 0
-    if lines is not None:
-        for rho, theta in lines[0]:
-            angle = (theta * 180 / np.pi) - 90
-            break
-
-    logger.debug(f"{angle=}")
+    # Use Tesseract OSD to detect orientation
+    try:
+        osd = pytesseract.image_to_osd(gray, config='--psm 0')
+        angle = float(osd.split('Rotate: ')[1].split('\n')[0])
+        logger.debug(f"Tesseract OSD angle: {angle}")
+    except pytesseract.pytesseract.TesseractError as e:
+        logger.warning(f"Tesseract OSD failed: {e}. Attempting fallback.")
+        angle = 0
     
-    # Rotate image to deskew
-    if abs(angle) > 0.5:  # Only rotate if skew is significant
+    # Fallback: Estimate rotation using text contours
+    if abs(angle) < 1.0:  # Trigger fallback for near-zero or failed OSD
+        try:
+            # Binarize for contour detection
+            _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+            
+            if contours:
+                # Find the largest contour (assuming it contains text)
+                largest_contour = max(contours, key=cv2.contourArea)
+                rect = cv2.minAreaRect(largest_contour)
+                box = cv2.boxPoints(rect)
+                box = box.astype(np.int32)  # Replace np.int0 with np.int32
+                angle_fallback = rect[-1]
+                # Convert angle to range [-90, 0] (OpenCV angle convention)
+                if angle_fallback < -45.0:
+                    angle_fallback = 90 + angle_fallback
+                elif angle_fallback > 45.0:
+                    angle_fallback = -(90 - angle_fallback)
+                logger.debug(f"Fallback detected angle: {angle_fallback} from contour")
+                angle = angle_fallback
+            else:
+                logger.warning("No contours detected for fallback")
+        except Exception as e:
+            logger.warning(f"Fallback failed: {e}. Using default angle 0.")
+            angle = 0
+    
+    # Apply rotation if significant angle detected
+    if abs(angle) > 0.1:
         (h, w) = img.shape[:2]
         center = (w // 2, h // 2)
         M = cv2.getRotationMatrix2D(center, angle, 1.0)
         img = cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+        # Recheck aspect ratio to confirm correction
+        new_height, new_width = img.shape[:2]
+        new_aspect = new_width / new_height
+        if abs(new_aspect - 1.0) > 0.5 and abs(angle) > 45:  # Likely 90-degree correction
+            logger.debug(f"Rechecking orientation after {angle}-degree rotation, new aspect: {new_aspect}")
+            try:
+                osd_recheck = pytesseract.image_to_osd(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), config='--psm 0')
+                recheck_angle = float(osd_recheck.split('Rotate: ')[1].split('\n')[0])
+                if abs(recheck_angle) > 0.1:
+                    logger.debug(f"Recheck angle: {recheck_angle}, re-rotating")
+                    M = cv2.getRotationMatrix2D(center, recheck_angle, 1.0)
+                    img = cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
+            except pytesseract.pytesseract.TesseractError as e:
+                logger.warning(f"Recheck OSD failed: {e}")
     
     # Convert back to PIL image
     img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -61,7 +105,7 @@ def clean_image(image):
     
     # Remove dark borders and shadows with adaptive thresholding
     thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                   cv2.THRESH_BINARY, 11, 2)
+                                   cv2.THRESH_BINARY, 21, 5)
     mask = cv2.bitwise_not(thresh)
     cleaned = cv2.bitwise_and(img, img, mask=mask)
     
@@ -74,24 +118,82 @@ def clean_image(image):
     return Image.fromarray(cleaned_rgb)
 
 def detect_double_page(image):
-    """Detect if an image contains two pages using OCR."""
+    """Detect if an image contains two pages using OCR, handling both horizontal and vertical layouts."""
     width, height = image.size
-    aspect_ratio = width / height
+    page_aspect_ratio = width / height
     
-    # Only check landscape pages (width > height)
-    if aspect_ratio <= 1.0:
-        return False
+    logger.debug(f"Page dimensions: width={width}, height={height}, aspect_ratio={page_aspect_ratio}")
     
-    # Split image into left and right halves
-    left_half = image.crop((0, 0, width // 2, height))
-    right_half = image.crop((width // 2, 0, width, height))
+    # Preprocess image for better OCR
+    img_array = np.array(image)
+    img = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    gray = cv2.equalizeHist(gray)
+    gray = cv2.GaussianBlur(gray, (5, 5), 0)  # Denoising
+    thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                                   cv2.THRESH_BINARY, 21, 5)
+    preprocessed = Image.fromarray(thresh)
     
-    # Perform OCR on both halves with improved settings
-    config = '--psm 3'  # Default mode for better handling of skewed text
-    left_text = pytesseract.image_to_string(left_half, config=config).strip()
-    logger.debug(f"{left_text=}")
-    right_text = pytesseract.image_to_string(right_half, config=config).strip()
-    logger.debug(f"{right_text=}")
+    # Determine split direction based on aspect ratio
+    if page_aspect_ratio > 1.5:
+        midpoint = width // 2
+        split_type = "horizontal"
+    elif page_aspect_ratio < 0.67:
+        midpoint = height // 2
+        split_type = "vertical"
+    else:
+        logger.debug("Aspect ratio suggests single page, no split")
+        return False, None
     
-    # Consider it double-page if both halves have significant text (>10 characters)
-    return len(left_text) > 10 and len(right_text) > 10
+    tolerance = max(10, width // 50)  # 10 pixels or 2% of width
+    
+    # Perform OCR to get text block data
+    config = '--psm 3'
+    data = pytesseract.image_to_data(preprocessed, config=config, output_type=pytesseract.Output.DICT)
+    
+    # Filter valid text blocks (confidence > 0)
+    blocks = [(data['left'][i], data['top'][i], data['width'][i], data['height'][i])
+              for i in range(len(data['text'])) if data['conf'][i] > 0]
+    
+    if not blocks:
+        logger.debug("No text blocks detected")
+        return False, None
+    
+    # Analyze distribution based on split type
+    if split_type == "horizontal":
+        left_edges = [left for left, _, _, _ in blocks]
+        right_edges = [left + width for left, _, width, _ in blocks]
+        crossings = sum(1 for left, right in zip(left_edges, right_edges)
+                       if (left < midpoint < right) or (abs(left - midpoint) < tolerance) or (abs(right - midpoint) < tolerance))
+    else:  # vertical
+        top_edges = [top for _, top, _, _ in blocks]
+        bottom_edges = [top + height for _, top, _, height in blocks]
+        crossings = sum(1 for top, bottom in zip(top_edges, bottom_edges)
+                       if (top < midpoint < bottom) or (abs(top - midpoint) < tolerance) or (abs(bottom - midpoint) < tolerance))
+    
+    logger.debug(f"Midpoint crossings: {crossings}, Total blocks: {len(blocks)}")
+    
+    # If few crossings (e.g., < 20% of blocks), assume a natural break
+    if crossings / len(blocks) < 0.2 and len(blocks) > 5:  # Minimum content threshold
+        # Perform split
+        if split_type == "horizontal":
+            left_half = preprocessed.crop((0, 0, width // 2, height))
+            right_half = preprocessed.crop((width // 2, 0, width, height))
+        else:  # vertical
+            left_half = preprocessed.crop((0, 0, width, height // 2))
+            right_half = preprocessed.crop((0, height // 2, width, height))
+        
+        # Verify each half has content
+        left_text = pytesseract.image_to_string(left_half, config=config).strip()
+        right_text = pytesseract.image_to_string(right_half, config=config).strip()
+        
+        logger.debug(f"Left text: {left_text}, Right text: {right_text}")
+        if len(left_text) > 5 and len(right_text) > 5:
+            logger.debug(f"Natural break detected, splitting {split_type}")
+            return True, split_type
+        else:
+            logger.debug("Insufficient content in one half, no split")
+            return False, None
+    else:
+        logger.debug("No natural break detected near midpoint")
+        return False, None

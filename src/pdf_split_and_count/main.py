@@ -3,6 +3,7 @@ from .pdf_handling import split_double_page_pdf, merge_pages_to_pdf
 from .reporting import generate_page_count_report
 from prepdir import configure_logging
 import logging
+import os
 
 logger = logging.getLogger(__name__)
 configure_logging(logger, level="INFO")
@@ -20,7 +21,7 @@ def process_pdfs_in_folder(folder_path, output_dir="processed_pdfs"):
         for file in files:
             if file.lower().endswith('.pdf'):
                 pdf_path = os.path.join(root, file)
-                print(f"Processing {pdf_path}...")
+                logger.info(f"Processing {pdf_path}...")
                 
                 # Split double-page PDF
                 split_image_paths = split_double_page_pdf(pdf_path, output_dir / Path(pdf_path).stem)
@@ -30,9 +31,13 @@ def process_pdfs_in_folder(folder_path, output_dir="processed_pdfs"):
                 merge_pages_to_pdf(split_image_paths, output_pdf)
                 
                 # Clean up temporary image files
-                for img_path in split_image_paths:
+                for img_path in split_image_paths:  # Fixed variable name from split_paths to split_image_paths
                     os.remove(img_path)
 
-if __name__ == "__main__":
+def main():
+    """Entry point for the pdf_split_and_count script."""
     folder_path = input("Enter the folder path containing PDFs: ")
     process_pdfs_in_folder(folder_path)
+
+if __name__ == "__main__":
+    main()

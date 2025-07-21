@@ -3,7 +3,7 @@ from pypdf import PdfReader, PdfWriter
 from pdf2image import convert_from_path
 from PIL import Image
 from pathlib import Path
-from .image_processing import clean_image, detect_double_page
+from .image_processing import clean_image, detect_double_page, deskew_image
 
 def count_pages_in_pdf(pdf_path):
     """Count total pages in a PDF file."""
@@ -20,17 +20,26 @@ def split_double_page_pdf(pdf_path, output_dir):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Convert PDF pages to images
-    images = convert_from_path(pdf_path)
+    # Convert PDF pages to images with explicit DPI
+    images = convert_from_path(pdf_path, dpi=300)
     split_pages = []
     
     for i, image in enumerate(images):
+        # Deskew and correct orientation
+        image = deskew_image(image)
+        
         # Check if the page is double-page using OCR
-        if detect_double_page(image):
+        is_double_page, split_type = detect_double_page(image)
+        if is_double_page:
             width, height = image.size
-            # Split into two equal parts (left and right)
-            left_page = image.crop((0, 0, width // 2, height))
-            right_page = image.crop((width // 2, 0, width, height))
+            if split_type == "horizontal":
+                # Split into left and right
+                left_page = image.crop((0, 0, width // 2, height))
+                right_page = image.crop((width // 2, 0, width, height))
+            else:  # vertical
+                # Split into top and bottom
+                left_page = image.crop((0, 0, width, height // 2))  # Top
+                right_page = image.crop((0, height // 2, width, height))  # Bottom
             
             # Clean both pages
             left_page = clean_image(left_page)

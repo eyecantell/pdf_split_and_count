@@ -79,6 +79,15 @@ def test_split_ten_things_pdf(tmp_path, caplog):
     split_paths = split_double_page_pdf(pdf_path, output_dir)
     assert len(split_paths) == 9, f"Expected 9 output images, got {len(split_paths)}"
 
+def test_split_landscape_double_page_pdf(tmp_path, caplog):
+    """Test that split_double_page_pdf splits a landscape double-page PDF into two pages per page."""
+    pdf_path = os.path.join("tests", "pdfs_for_test", "TenThingsDevLearnFull_first_two_sheets_on_one_page.pdf")
+    assert os.path.exists(pdf_path), f"PDF file not found at {pdf_path}"
+    output_dir = tmp_path / "split_output"
+    caplog.set_level(logging.DEBUG, logger="pdf_split_and_count.image_processing")
+    split_paths = split_double_page_pdf(pdf_path, output_dir)
+    assert len(split_paths) == 2, f"Expected 2 output images, got {len(split_paths)}"
+
 def test_split_portrait_double_page_pdf(tmp_path, caplog):
     """Test that split_double_page_pdf splits a portrait double-page PDF into two pages."""
     pdf_path = os.path.join("tests", "pdfs_for_test", "TenThingsDevLearnFull_first_two_sheets_portrait_on_one_page.pdf")
@@ -97,7 +106,7 @@ def test_split_upside_down_double_page_pdf(tmp_path, caplog):
     split_paths = split_double_page_pdf(pdf_path, output_dir)
     assert len(split_paths) == 2, f"Expected 2 output images, got {len(split_paths)}"
 
-def test_split_landscape_double_page_pdf(tmp_path, caplog):
+def test_split_landscape_double_page_multi_page_pdf(tmp_path, caplog):
     """Test that split_double_page_pdf splits a landscape double-page PDF into two pages per page."""
     pdf_path = os.path.join("tests", "pdfs_for_test", "TenThingsDevLearnFull_two_sheets_per_page.pdf")
     assert os.path.exists(pdf_path), f"PDF file not found at {pdf_path}"

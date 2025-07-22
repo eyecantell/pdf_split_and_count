@@ -3,6 +3,7 @@ from pathlib import Path
 import warnings
 from pypdf import PdfReader, PdfWriter
 from pdf2image import convert_from_path
+from PIL import Image
 from .image_processing import detect_double_page, clean_image
 import logging
 
@@ -67,3 +68,47 @@ def split_double_page_pdf(pdf_path, output_dir):
         os.remove(temp_pdf)
     
     return split_image_paths
+
+def merge_pages_to_pdf(image_paths, output_pdf):
+    """Merge a list of image files into a single PDF."""
+    output_pdf = Path(output_pdf)
+    output_pdf.parent.mkdir(parents=True, exist_ok=True)
+    
+    try:
+        # Create a new PDF writer
+        pdf_writer = PdfWriter()
+        
+        for img_path in sorted(image_paths):  # Sort to maintain order
+            logger.info(f"Adding image {img_path} to PDF")
+            try:
+                # Open image with PIL
+                img = Image.open(img_path)
+                # Convert to RGB if necessary (PDF doesn't support RGBA)
+                if img.mode == 'RGBA':
+                    img = img.convert('RGB')
+                
+                # Save image to a temporary PDF
+                temp_pdf = output_pdf.parent / f"temp_{Path(img_path).name}.pdf"
+                img.save(temp_pdf, format='PDF', resolution=300)
+                
+                # Read the temporary PDF and add its page to the writer
+                with open(temp_pdf, 'rb') as temp_file:
+                    temp_reader = PdfReader(temp_file)
+                    pdf_writer.add_page(temp_reader.pages[0])
+                
+                # Clean up temporary PDF
+                os.remove(temp_pdf)
+            except Exception as e:
+                logger.error(f"Error processing image {img_path}: {e}")
+                continue
+        
+        # Write the final PDF
+        with open(output_pdf, 'wb') as output_file:
+            pdf_writer.write(output_file)
+        logger.info(f"Merged PDF saved to {output_pdf}")
+        
+    except Exception as e:
+        logger.error(f"Error merging images to PDF {output_pdf}: {e}")
+        return
+    
+    return output_pdf

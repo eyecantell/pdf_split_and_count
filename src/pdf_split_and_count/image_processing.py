@@ -59,7 +59,7 @@ def detect_double_page(image):
     preprocessed = preprocess_for_ocr(image)
 
     # Step 2: Perform OCR to get text block data
-    config = '--psm 4'  # Assume column-based layout for better double-page detection
+    config = '--psm 6'  # Assume uniform text block for large titles
     data = pytesseract.image_to_data(preprocessed, config=config, output_type=pytesseract.Output.DICT)
     blocks = [
         (data['left'][i], data['top'][i], data['width'][i], data['height'][i], data['text'][i], data['conf'][i])
@@ -68,33 +68,30 @@ def detect_double_page(image):
     ]
     logger.debug(f"Detected {len(blocks)} text blocks with confidence > 30")
     if blocks:
-        logger.debug(f"Sample text blocks: {[(b[4], b[5]) for b in blocks[:3]]}")
+        logger.debug(f"Sample text blocks: {[(b[4], b[5], b[2]) for b in blocks[:3]]}")  # Include width
 
     # Step 3: Handle case with insufficient text blocks
     if len(blocks) < 2:
         logger.debug("Too few text blocks detected, assuming single page")
         return False, None
 
-    # Step 4: Analyze text block distribution for a natural break
-    # Calculate left and right edges of text blocks
+    # Step 4: Check for large text blocks that might span the middle
+    midpoint = width // 2
+    tolerance = max(10, width // 50)
+    large_blocks = [b for b in blocks if b[2] > width // 4]  # Blocks wider than 25% of page width
+    spanning_blocks = [
+        b for b in large_blocks
+        if (b[0] < midpoint < b[0] + b[2]) or
+           (abs(b[0] - midpoint) < tolerance) or
+           (abs(b[0] + b[2] - midpoint) < tolerance)
+    ]
+    if spanning_blocks:
+        logger.debug(f"Large spanning blocks detected: {[(b[4], b[2]) for b in spanning_blocks]}, assuming single page")
+        return False, None
+
+    # Step 5: Analyze text block distribution for a natural break
     left_edges = [left for left, _, width, _, _, _ in blocks]
     right_edges = [left + width for left, _, width, _, _, _ in blocks]
-    midpoint = width // 2
-    tolerance = max(10, width // 50)  # Tolerance for blocks near midpoint
-
-    # Count blocks that cross the midpoint or are close to it
-    crossings = sum(
-        1 for left, right in zip(left_edges, right_edges)
-        if (left < midpoint < right) or
-           (abs(left - midpoint) < tolerance) or
-           (abs(right - midpoint) < tolerance)
-    )
-    logger.debug(f"Midpoint crossings: {crossings}, Total blocks: {len(blocks)}")
-
-    # Step 5: Check for a natural break (gap in the middle)
-    # Sort blocks by left edge and find gaps
-    sorted_left_edges = sorted(left_edges)
-    sorted_right_edges = sorted(right_edges)
     mid_range = (midpoint - tolerance, midpoint + tolerance)
     blocks_left_side = [b for b in blocks if b[0] + b[2] <= mid_range[1]]  # Blocks ending before mid_range
     blocks_right_side = [b for b in blocks if b[0] >= mid_range[0]]  # Blocks starting after mid_range
@@ -106,8 +103,20 @@ def detect_double_page(image):
     logger.debug(f"Gap size in middle: {gap_size}px, Left side blocks: {len(blocks_left_side)}, Right side blocks: {len(blocks_right_side)}")
 
     # Step 6: Validate split with text content
-    min_gap_size = max(100, width // 20)  # Allow smaller gutters
-    if gap_size > min_gap_size and len(blocks_left_side) > 1 and len(blocks_right_side) > 1 and crossings < len(blocks) * 0.05:
+    min_gap_size = max(100, width // 15)  # Slightly stricter gap threshold
+    min_blocks_per_side = max(5, len(blocks) // 4)  # At least 5 or 25% of total blocks
+    crossings = sum(
+        1 for left, right in zip(left_edges, right_edges)
+        if (left < midpoint < right) or
+           (abs(left - midpoint) < tolerance) or
+           (abs(right - midpoint) < tolerance)
+    )
+    logger.debug(f"Midpoint crossings: {crossings}, Total blocks: {len(blocks)}")
+
+    if (gap_size > min_gap_size and 
+        len(blocks_left_side) >= min_blocks_per_side and 
+        len(blocks_right_side) >= min_blocks_per_side and 
+        crossings < len(blocks) * 0.05):
         # Verify text content in both halves
         left_half = preprocessed.crop((0, 0, midpoint, height))
         right_half = preprocessed.crop((midpoint, 0, width, height))
@@ -122,5 +131,8 @@ def detect_double_page(image):
             logger.debug("Insufficient text in one half, assuming single page")
             return False, None
     else:
-        logger.debug(f"No significant gap (gap_size={gap_size}px, required>{min_gap_size}px) or too many crossings ({crossings}), assuming single page")
+        logger.debug(f"No split: gap_size={gap_size}px (required>{min_gap_size}px), "
+                     f"left_blocks={len(blocks_left_side)} (required>={min_blocks_per_side}), "
+                     f"right_blocks={len(blocks_right_side)} (required>={min_blocks_per_side}), "
+                     f"crossings={crossings}")
         return False, None

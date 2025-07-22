@@ -6,130 +6,111 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-def deskew_image(image):
-    """Deskew an image to correct rotation and orientation."""
-    # Convert PIL image to OpenCV format
-    img_array = np.array(image)
-    img = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
-    
-    # Convert to grayscale
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    
-    # Preprocess for text detection (less aggressive)
-    gray_text = cv2.equalizeHist(gray)
-    _, gray_text = cv2.threshold(gray_text, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    
-    # Perform OCR to check text content
-    ocr_data = pytesseract.image_to_data(gray_text, config='--psm 3', output_type=pytesseract.Output.DICT)
-    total_text = ''.join([text for text, conf in zip(ocr_data['text'], ocr_data['conf']) if conf > 0]).strip()
-    logger.debug(f"Detected text length: {len(total_text)}")
-    
-    # Preprocess for OSD (existing pipeline)
-    gray_osd = cv2.equalizeHist(gray)
-    gray_osd = cv2.adaptiveThreshold(gray_osd, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-                                     cv2.THRESH_BINARY, 11, 2)
-    edges = cv2.Canny(gray_osd, 30, 100, apertureSize=3)
-    gray_osd = cv2.addWeighted(gray_osd, 0.6, edges, 0.4, 0.0)
-    
-    # Use Tesseract OSD to detect orientation
-    angle = 0
-    if len(total_text) > 5:  # Trust OSD if sufficient text is detected
-        try:
-            osd = pytesseract.image_to_osd(gray_osd, config='--psm 0')
-            angle = float(osd.split('Rotate: ')[1].split('\n')[0])
-            logger.debug(f"Tesseract OSD angle: {angle}")
-        except pytesseract.pytesseract.TesseractError as e:
-            logger.warning(f"Tesseract OSD failed: {e}. Attempting fallback.")
-            angle = 0
-    else:
-        logger.warning(f"Insufficient text ({len(total_text)} characters), skipping OSD and using fallback.")
 
-    # Fallback: Estimate rotation using text contours
-    if abs(angle) < 1.0:  # Trigger fallback for near-zero or failed OSD
-        try:
-            # Binarize for contour detection
-            _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            contours, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-            
-            if contours:
-                # Combine multiple contours for better angle estimation
-                valid_contours = [c for c in contours if cv2.contourArea(c) > 100]  # Filter small contours
-                if valid_contours:
-                    # Concatenate contours to get a bounding rectangle
-                    all_points = np.concatenate(valid_contours)
-                    rect = cv2.minAreaRect(all_points)
-                    angle_fallback = rect[-1]
-                    # Convert angle to range [-90, 90]
-                    if angle_fallback < -45.0:
-                        angle_fallback = 90 + angle_fallback
-                    elif angle_fallback > 45.0:
-                        angle_fallback = -(90 - angle_fallback)
-                    logger.debug(f"Fallback detected angle: {angle_fallback} from contours")
-                    angle = angle_fallback
-                else:
-                    logger.warning("No significant contours detected for fallback")
-            else:
-                logger.warning("No contours detected for fallback")
-        except Exception as e:
-            logger.warning(f"Fallback failed: {e}. Using default angle 0.")
-            angle = 0
+def deskew_image(image):
+    """Deskew an image by detecting its orientation using Tesseract OSD."""
+    # Convert PIL image to OpenCV format
+    image_np = np.array(image)
+    gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
+    gray = cv2.GaussianBlur(gray, (3, 3), 0)
     
-    # Apply rotation if significant angle detected
-    if abs(angle) > 0.1:
-        (h, w) = img.shape[:2]
-        center = (w // 2, h // 2)
-        M = cv2.getRotationMatrix2D(center, angle, 1.0)
-        img = cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
-        # Recheck aspect ratio to confirm correction
-        new_height, new_width = img.shape[:2]
-        new_aspect = new_width / new_height
-        if abs(new_aspect - 1.0) > 0.5 and abs(angle) > 45:  # Likely 90-degree correction
-            logger.debug(f"Rechecking orientation after {angle}-degree rotation, new aspect: {new_aspect}")
-            try:
-                osd_recheck = pytesseract.image_to_osd(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), config='--psm 0')
-                recheck_angle = float(osd_recheck.split('Rotate: ')[1].split('\n')[0])
-                if abs(recheck_angle) > 0.1:
-                    logger.debug(f"Recheck angle: {recheck_angle}, re-rotating")
-                    M = cv2.getRotationMatrix2D(center, recheck_angle, 1.0)
-                    img = cv2.warpAffine(img, M, (w, h), flags=cv2.INTER_CUBIC, borderMode=cv2.BORDER_REPLICATE)
-            except pytesseract.pytesseract.TesseractError as e:
-                logger.warning(f"Recheck OSD failed: {e}")
+    # Run Tesseract OSD to detect orientation
+    osd = pytesseract.image_to_osd(gray, config='--psm 0')
+    angle = 0.0
+    confidence = 0.0
+    text_length = 0
+    script_conf = 0.0
     
-    # Convert back to PIL image
-    img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-    return Image.fromarray(img_rgb)
+    for line in osd.split('\n'):
+        if 'Rotate' in line:
+            angle = float(line.split(': ')[1])
+        if 'Confidence' in line:
+            confidence = float(line.split(': ')[1])
+        if 'Text' in line:
+            text_length = len(line.split(': ')[1])
+        if 'Script confidence' in line:
+            script_conf = float(line.split(': ')[1])
+    
+    logger.debug(f"Tesseract OSD angle: {angle}, script confidence: {script_conf}")
+    
+    # Normalize angle to [0, 360)
+    angle = angle % 360
+    logger.debug(f"Normalized OSD angle: {angle}")
+    
+    # Verify OSD reliability
+    if text_length > 10 and confidence > 50.0 and script_conf > 0.5:
+        logger.debug(f"OSD angle {angle} verified (text length: {text_length}, confidence: {confidence:.2f}, script confidence: {script_conf:.2f})")
+    else:
+        logger.warning(f"OSD angle {angle} unreliable (text length: {text_length}, confidence: {confidence:.2f}, script confidence: {script_conf:.2f}), trying all orientations.")
+        max_confidence = 0.0
+        best_angle = 0
+        best_text = ""
+        best_top_text = []
+        for test_angle in [0, 90, 180, 270]:
+            rotated = image.rotate(test_angle, expand=True)
+            data = pytesseract.image_to_data(rotated, config='--psm 6 -c textord_tabfind_find_tables=0', output_type=pytesseract.Output.DICT)
+            total_conf = sum(float(c) for c in data['conf'] if float(c) > 0)
+            text = data['text']
+            top_texts = [text[i] for i, top in enumerate(data['top']) if text[i].strip() and top < rotated.height // 4]
+            logger.debug(f"Angle {test_angle}: Total confidence = {total_conf:.2f}, Text length = {len(''.join(text))}, Top text count = {len(top_texts)}")
+            if total_conf > max_confidence:
+                max_confidence = total_conf
+                best_angle = test_angle
+                best_text = ''.join(text)
+                best_top_text = top_texts
+        angle = best_angle
+        logger.debug(f"Selected angle from confidence: {angle} with confidence: {max_confidence:.2f}")
+        
+        # Check if text at top is right-side-up (for 90 vs. 270)
+        if angle in [90, 270] and best_top_text:
+            rotated = image.rotate(angle, expand=True)
+            data = pytesseract.image_to_data(rotated, config='--psm 6 -c textord_tabfind_find_tables=0', output_type=pytesseract.Output.DICT)
+            top_conf = sum(float(c) for i, c in enumerate(data['conf']) if data['text'][i].strip() and data['top'][i] < rotated.height // 4 and float(c) > 0)
+            if top_conf < 100 or len(best_top_text) < 2 or script_conf < 0.5:
+                angle = (angle + 180) % 360  # Switch 90 to 270 or vice versa
+                logger.debug(f"Switched to angle {angle} to ensure right-side-up text (top conf: {top_conf:.2f}, top text count: {len(best_top_text)})")
+    
+    # Apply rotation
+    if abs(angle) > 0.1:  # Ensure rotation for non-zero angles
+        image = image.rotate(angle, expand=True)
+        logger.debug(f"Applied rotation of {angle} degrees")
+    else:
+        logger.debug("No rotation applied (angle = 0)")
+    
+    # Fallback to contour-based deskewing if needed
+    if abs(angle) < 0.1 and text_length < 10:
+        gray = cv2.cvtColor(np.array(image), cv2.COLOR_RGB2GRAY)
+        edges = cv2.Canny(gray, 50, 150, apertureSize=3)
+        lines = cv2.HoughLines(edges, 1, np.pi / 180, 200)
+        if lines is not None:
+            for rho, theta in lines[0]:
+                angle = (theta * 180 / np.pi) - 90
+                angle = angle % 360  # Normalize to [0, 360)
+                if abs(angle) > 10:
+                    image = image.rotate(angle, expand=True)
+                    logger.debug(f"Fallback detected angle: {angle}")
+                    break
+    
+    return image
 
 def clean_image(image):
     """Remove punch holes, borders, and artifacts from an image."""
-    # Convert PIL image to OpenCV format
     img_array = np.array(image)
     img = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
-    
-    # Convert to grayscale
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    
-    # Enhance contrast for better OCR and artifact removal
     gray = cv2.equalizeHist(gray)
-    
-    # Remove punch holes (detect circles and fill them)
     circles = cv2.HoughCircles(gray, cv2.HOUGH_GRADIENT, dp=1, minDist=20,
                               param1=50, param2=30, minRadius=5, maxRadius=20)
     if circles is not None:
         circles = np.round(circles[0, :]).astype("int")
         for (x, y, r) in circles:
             cv2.circle(img, (x, y), r, (255, 255, 255), -1)
-    
-    # Remove dark borders and shadows with adaptive thresholding
     thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                    cv2.THRESH_BINARY, 21, 5)
     mask = cv2.bitwise_not(thresh)
     cleaned = cv2.bitwise_and(img, img, mask=mask)
-    
-    # Apply morphological operation to remove small noise
     kernel = np.ones((3, 3), np.uint8)
     cleaned = cv2.morphologyEx(cleaned, cv2.MORPH_OPEN, kernel)
-    
-    # Convert back to PIL image
     cleaned_rgb = cv2.cvtColor(cleaned, cv2.COLOR_BGR2RGB)
     return Image.fromarray(cleaned_rgb)
 
@@ -137,20 +118,22 @@ def detect_double_page(image):
     """Detect if an image contains two pages using OCR, handling both horizontal and vertical layouts."""
     width, height = image.size
     page_aspect_ratio = width / height
-    
     logger.debug(f"Page dimensions: width={width}, height={height}, aspect_ratio={page_aspect_ratio}")
-    
-    # Preprocess image for better OCR
     img_array = np.array(image)
     img = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     gray = cv2.equalizeHist(gray)
-    gray = cv2.GaussianBlur(gray, (5, 5), 0)  # Denoising
+    gray = cv2.GaussianBlur(gray, (5, 5), 0)
     thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
                                    cv2.THRESH_BINARY, 21, 5)
     preprocessed = Image.fromarray(thresh)
-    
-    # Determine split direction based on aspect ratio
+    config = '--psm 3'
+    data = pytesseract.image_to_data(preprocessed, config=config, output_type=pytesseract.Output.DICT)
+    blocks = [(data['left'][i], data['top'][i], data['width'][i], data['height'][i])
+              for i in range(len(data['text'])) if data['conf'][i] > 0]
+    if not blocks:
+        logger.debug("No text blocks detected")
+        return False, None
     if page_aspect_ratio > 1.5:
         midpoint = width // 2
         split_type = "horizontal"
@@ -160,49 +143,27 @@ def detect_double_page(image):
     else:
         logger.debug("Aspect ratio suggests single page, no split")
         return False, None
-    
-    tolerance = max(10, width // 50)  # 10 pixels or 2% of width
-    
-    # Perform OCR to get text block data
-    config = '--psm 3'
-    data = pytesseract.image_to_data(preprocessed, config=config, output_type=pytesseract.Output.DICT)
-    
-    # Filter valid text blocks (confidence > 0)
-    blocks = [(data['left'][i], data['top'][i], data['width'][i], data['height'][i])
-              for i in range(len(data['text'])) if data['conf'][i] > 0]
-    
-    if not blocks:
-        logger.debug("No text blocks detected")
-        return False, None
-    
-    # Analyze distribution based on split type
+    tolerance = max(10, width // 50)
     if split_type == "horizontal":
         left_edges = [left for left, _, _, _ in blocks]
         right_edges = [left + width for left, _, width, _ in blocks]
         crossings = sum(1 for left, right in zip(left_edges, right_edges)
                        if (left < midpoint < right) or (abs(left - midpoint) < tolerance) or (abs(right - midpoint) < tolerance))
-    else:  # vertical
+    else:
         top_edges = [top for _, top, _, _ in blocks]
         bottom_edges = [top + height for _, top, _, height in blocks]
         crossings = sum(1 for top, bottom in zip(top_edges, bottom_edges)
                        if (top < midpoint < bottom) or (abs(top - midpoint) < tolerance) or (abs(bottom - midpoint) < tolerance))
-    
     logger.debug(f"Midpoint crossings: {crossings}, Total blocks: {len(blocks)}")
-    
-    # If few crossings (e.g., < 20% of blocks), assume a natural break
-    if crossings / len(blocks) < 0.2 and len(blocks) > 5:  # Minimum content threshold
-        # Perform split
+    if crossings / len(blocks) < 0.2 and len(blocks) > 5:
         if split_type == "horizontal":
             left_half = preprocessed.crop((0, 0, width // 2, height))
             right_half = preprocessed.crop((width // 2, 0, width, height))
-        else:  # vertical
+        else:
             left_half = preprocessed.crop((0, 0, width, height // 2))
             right_half = preprocessed.crop((0, height // 2, width, height))
-        
-        # Verify each half has content
         left_text = pytesseract.image_to_string(left_half, config=config).strip()
         right_text = pytesseract.image_to_string(right_half, config=config).strip()
-        
         logger.debug(f"Left text: {left_text}, Right text: {right_text}")
         if len(left_text) > 5 and len(right_text) > 5:
             logger.debug(f"Natural break detected, splitting {split_type}")

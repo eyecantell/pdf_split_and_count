@@ -1,91 +1,63 @@
 import os
-from pypdf import PdfReader, PdfWriter
-from pdf2image import convert_from_path
-from PIL import Image
 from pathlib import Path
-from .image_processing import clean_image, detect_double_page, deskew_image
+import PyPDF2
+from pdf2image import convert_from_path
+from .image_processing import detect_double_page, clean_image
+import warnings
+warnings.filterwarnings("ignore", category=SyntaxWarning)
+from pdf_orientation_corrector.main import detect_and_correct_orientation
 
 def count_pages_in_pdf(pdf_path):
-    """Count total pages in a PDF file."""
+    """Count the number of pages in a PDF file."""
     try:
         with open(pdf_path, 'rb') as file:
-            pdf = PdfReader(file)
-            return len(pdf.pages)
+            pdf_reader = PyPDF2.PdfReader(file)
+            return len(pdf_reader.pages)
     except Exception as e:
-        print(f"Error processing {pdf_path}: {e}")
+        print(f"Error reading {pdf_path}: {e}")
         return 0
 
 def split_double_page_pdf(pdf_path, output_dir):
-    """Split PDFs with two pages per sheet into individual pages if double-page layout is detected."""
+    """Split a PDF with double-page spreads into single pages."""
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
+    split_image_paths = []
     
-    # Convert PDF pages to images with explicit DPI
-    images = convert_from_path(pdf_path, dpi=300)
-    split_pages = []
+    # Correct orientation first
+    temp_pdf = output_dir / "temp_corrected.pdf"
+    detect_and_correct_orientation(pdf_path, temp_pdf, dpi=300, batch_size=20, verbose=True)
+    
+    # Convert corrected PDF to images
+    try:
+        images = convert_from_path(temp_pdf, dpi=300)
+    except Exception as e:
+        print(f"Error converting {temp_pdf} to images: {e}")
+        return []
     
     for i, image in enumerate(images):
-        # Deskew and correct orientation
-        image = deskew_image(image)
-        
-        # Check if the page is double-page using OCR
-        is_double_page, split_type = detect_double_page(image)
+        # Detect if the page is a double-page spread
+        is_double_page, split_info = detect_double_page(image)
         if is_double_page:
-            width, height = image.size
-            if split_type == "horizontal":
-                # Split into left and right
-                left_page = image.crop((0, 0, width // 2, height))
-                right_page = image.crop((width // 2, 0, width, height))
+            if split_info == "horizontal":
+                left_half = image.crop((0, 0, image.width // 2, image.height))
+                right_half = image.crop((image.width // 2, 0, image.width, image.height))
+                split_images = [left_half, right_half]
             else:  # vertical
-                # Split into top and bottom
-                left_page = image.crop((0, 0, width, height // 2))  # Top
-                right_page = image.crop((0, height // 2, width, height))  # Bottom
-            
-            # Clean both pages
-            left_page = clean_image(left_page)
-            right_page = clean_image(right_page)
-            
-            # Save split pages
-            left_path = output_dir / f"{Path(pdf_path).stem}_page_{i*2+1}.png"
-            right_path = output_dir / f"{Path(pdf_path).stem}_page_{i*2+2}.png"
-            left_page.save(left_path, quality=95)
-            right_page.save(right_path, quality=95)
-            split_pages.extend([left_path, right_path])
+                top_half = image.crop((0, 0, image.width, image.height // 2))
+                bottom_half = image.crop((0, image.height // 2, image.width, image.height))
+                split_images = [top_half, bottom_half]
         else:
-            # Single-page layout, process as is
-            cleaned_page = clean_image(image)
-            page_path = output_dir / f"{Path(pdf_path).stem}_page_{i+1}.png"
-            cleaned_page.save(page_path, quality=95)
-            split_pages.append(page_path)
-    
-    return split_pages
-
-def merge_pages_to_pdf(image_paths, output_pdf_path):
-    """Merge images back into a single PDF."""
-    if not image_paths:
-        return
-    
-    # Load images and convert to PDF-compatible format
-    images = [Image.open(path).convert('RGB') for path in image_paths]
-    
-    # Create a new PDF
-    pdf_writer = PdfWriter()
-    
-    # Convert each image to PDF page
-    for image in images:
-        # Save image to a temporary PDF
-        temp_pdf = f"temp_{id(image)}.pdf"
-        image.save(temp_pdf, "PDF", resolution=100.0)
+            split_images = [image]
         
-        # Read the temporary PDF and add its pages to the writer
-        temp_reader = PdfReader(temp_pdf)
-        for page in temp_reader.pages:
-            pdf_writer.add_page(page)
-        
-        # Clean up temporary PDF
+        # Clean and save split images
+        for j, split_image in enumerate(split_images):
+            cleaned_image = clean_image(split_image)
+            output_path = output_dir / f"{Path(pdf_path).stem}_page_{i+1}_{j+1}.png"
+            cleaned_image.save(output_path)
+            split_image_paths.append(output_path)
+    
+    # Clean up temporary PDF
+    if temp_pdf.exists():
         os.remove(temp_pdf)
     
-    # Save the final PDF
-    with open(output_pdf_path, 'wb') as output_file:
-        pdf_writer.write(output_file)
-    print(f"Merged PDF saved to {output_pdf_path}")
+    return split_image_paths

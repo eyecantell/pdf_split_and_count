@@ -1,17 +1,20 @@
 import os
 from pathlib import Path
-import PyPDF2
+import warnings
+from pypdf import PdfReader, PdfWriter
 from pdf2image import convert_from_path
 from .image_processing import detect_double_page, clean_image
-import warnings
-warnings.filterwarnings("ignore", category=SyntaxWarning)
+
+# Suppress PyPDF2 deprecation and syntax warnings from pdf_orientation_corrector
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="pdf_orientation_corrector")
+warnings.filterwarnings("ignore", category=SyntaxWarning, module="pdf_orientation_corrector")
 from pdf_orientation_corrector.main import detect_and_correct_orientation
 
 def count_pages_in_pdf(pdf_path):
     """Count the number of pages in a PDF file."""
     try:
         with open(pdf_path, 'rb') as file:
-            pdf_reader = PyPDF2.PdfReader(file)
+            pdf_reader = PdfReader(file)
             return len(pdf_reader.pages)
     except Exception as e:
         print(f"Error reading {pdf_path}: {e}")
@@ -25,7 +28,7 @@ def split_double_page_pdf(pdf_path, output_dir):
     
     # Correct orientation first
     temp_pdf = output_dir / "temp_corrected.pdf"
-    detect_and_correct_orientation(pdf_path, temp_pdf, dpi=300, batch_size=20, verbose=True)
+    detect_and_correct_orientation(pdf_path, temp_pdf, dpi=300, batch_size=20)
     
     # Convert corrected PDF to images
     try:

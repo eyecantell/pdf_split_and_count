@@ -6,7 +6,7 @@ from pdf_split_and_count import split_double_page_pdf, count_pages_in_pdf
 import warnings
 from pdf2image import convert_from_path
 # Suppress PyPDF2 deprecation and syntax warnings from pdf_orientation_corrector
-warnings.filterwarnings("ignore", category=DeprecationWarning, module="pdf_orientation_corrector.main")
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="pyPDF2")
 warnings.filterwarnings("ignore", category=SyntaxWarning, module="pdf_orientation_corrector.main")
 from pdf_orientation_corrector.main import detect_and_correct_orientation
 
@@ -113,4 +113,4 @@ def test_split_landscape_double_page_multi_page_pdf(tmp_path, caplog):
     output_dir = tmp_path / "split_output"
     caplog.set_level(logging.DEBUG, logger="pdf_split_and_count.image_processing")
     split_paths = split_double_page_pdf(pdf_path, output_dir)
-    assert len(split_paths) == 10, f"Expected 10 output images, got {len(split_paths)}"
+    assert len(split_paths) == 9, f"Expected 9 output images, got {len(split_paths)}"

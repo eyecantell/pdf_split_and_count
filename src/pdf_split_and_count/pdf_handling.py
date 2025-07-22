@@ -4,9 +4,12 @@ import warnings
 from pypdf import PdfReader, PdfWriter
 from pdf2image import convert_from_path
 from .image_processing import detect_double_page, clean_image
+import logging
+
+logger = logging.getLogger(__name__)
 
 # Suppress PyPDF2 deprecation and syntax warnings from pdf_orientation_corrector
-warnings.filterwarnings("ignore", category=DeprecationWarning, module="pdf_orientation_corrector")
+warnings.filterwarnings("ignore", category=DeprecationWarning, module="PyPDF2")
 warnings.filterwarnings("ignore", category=SyntaxWarning, module="pdf_orientation_corrector")
 from pdf_orientation_corrector.main import detect_and_correct_orientation
 
@@ -17,7 +20,7 @@ def count_pages_in_pdf(pdf_path):
             pdf_reader = PdfReader(file)
             return len(pdf_reader.pages)
     except Exception as e:
-        print(f"Error reading {pdf_path}: {e}")
+        logger.error(f"Error reading {pdf_path}: {e}")
         return 0
 
 def split_double_page_pdf(pdf_path, output_dir):
@@ -34,7 +37,7 @@ def split_double_page_pdf(pdf_path, output_dir):
     try:
         images = convert_from_path(temp_pdf, dpi=300)
     except Exception as e:
-        print(f"Error converting {temp_pdf} to images: {e}")
+        logger.error(f"Error converting {temp_pdf} to images: {e}")
         return []
     
     for i, image in enumerate(images):

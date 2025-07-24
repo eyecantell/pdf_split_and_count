@@ -5,6 +5,7 @@ from pypdf import PdfReader, PdfWriter
 from pdf2image import convert_from_path
 from PIL import Image
 from .image_processing import detect_double_page, clean_image
+from .utils import suppress_output
 import logging
 
 logger = logging.getLogger(__name__)
@@ -30,9 +31,10 @@ def split_double_page_pdf(pdf_path, output_dir):
     output_dir.mkdir(parents=True, exist_ok=True)
     split_image_paths = []
     
-    # Correct orientation first
+    # Correct orientation first, suppressing pdf_orientation_corrector output
     temp_pdf = output_dir / "temp_corrected.pdf"
-    detect_and_correct_orientation(pdf_path, temp_pdf, dpi=300, batch_size=20)
+    with suppress_output(suppress_logging_for="pdf_orientation_corrector"):
+        detect_and_correct_orientation(pdf_path, temp_pdf, dpi=300, batch_size=20)
     
     # Convert corrected PDF to images
     try:
@@ -58,7 +60,7 @@ def split_double_page_pdf(pdf_path, output_dir):
         
         # Clean and save split images
         for j, split_image in enumerate(split_images):
-            cleaned_image = clean_image(split_image)
+            cleaned_image = split_image #clean_image(split_image)
             output_path = output_dir / f"{Path(pdf_path).stem}_page_{i+1}_{j+1}.png"
             cleaned_image.save(output_path)
             split_image_paths.append(output_path)

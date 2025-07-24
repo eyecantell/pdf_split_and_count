@@ -13,9 +13,6 @@ def process_pdfs_in_folder(folder_path, output_dir="processed_pdfs"):
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
     
-    # Generate page count report
-    generate_page_count_report(folder_path)
-    
     # Process each PDF
     for root, _, files in os.walk(folder_path):
         for file in files:
@@ -31,8 +28,15 @@ def process_pdfs_in_folder(folder_path, output_dir="processed_pdfs"):
                 merge_pages_to_pdf(split_image_paths, output_pdf)
                 
                 # Clean up temporary image files
-                for img_path in split_image_paths:  # Fixed variable name from split_paths to split_image_paths
+                for img_path in split_image_paths:
                     os.remove(img_path)
+                    #print(f"Removing {img_path}")
+                
+                #print(f"Removing {Path(img_path).parent}")
+                os.rmdir(Path(img_path).parent)
+
+    # Generate page count report
+    generate_page_count_report(output_dir)
 
 def main():
     """Entry point for the pdf_split_and_count script."""
